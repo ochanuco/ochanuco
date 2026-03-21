@@ -153,13 +153,14 @@
   function buildSpawn(name) {
     const centerX = Math.floor(state.columns / 2);
     const centerY = Math.floor(state.rows / 2);
+    const wrapCell = (value, size) => ((value % size) + size) % size;
 
     if (name === "player") {
       return createSnake(
         "player",
         [
-          { x: centerX - 7, y: centerY + 4 },
-          { x: centerX - 6, y: centerY + 4 },
+          { x: wrapCell(centerX - 7, state.columns), y: wrapCell(centerY + 4, state.rows) },
+          { x: wrapCell(centerX - 6, state.columns), y: wrapCell(centerY + 4, state.rows) },
         ],
         { x: 1, y: 0 },
       );
@@ -168,8 +169,8 @@
     return createSnake(
       "cpu",
       [
-        { x: centerX + 7, y: centerY - 4 },
-        { x: centerX + 8, y: centerY - 4 },
+        { x: wrapCell(centerX + 7, state.columns), y: wrapCell(centerY - 4, state.rows) },
+        { x: wrapCell(centerX + 8, state.columns), y: wrapCell(centerY - 4, state.rows) },
       ],
       { x: -1, y: 0 },
     );
