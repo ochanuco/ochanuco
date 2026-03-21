@@ -33,6 +33,8 @@
     columns: 0,
     rows: 0,
     cell: 0,
+    offsetX: 0,
+    offsetY: 0,
     snakes: {},
     food: null,
     speed: 150,
@@ -45,6 +47,15 @@
   const speedBounds = {
     slowestInterval: 180,
     fastestInterval: 72,
+  };
+  const swipeThreshold = 24;
+  const touchState = {
+    startX: 0,
+    startY: 0,
+    lastX: 0,
+    lastY: 0,
+    tracking: false,
+    handled: false,
   };
 
   function getTotalSnakeLength() {
@@ -79,7 +90,48 @@
       return fallback;
     }
 
-    return Math.max(1, Math.round(avatarSize / 32));
+    return Math.max(1, avatarSize / 32);
+  }
+
+  function getWallpaperMetrics() {
+    const rect = wallpaper.getBoundingClientRect();
+    const width = rect.width || window.innerWidth;
+    const height = rect.height || window.innerHeight;
+    const cell = getWallpaperPixelSize();
+
+    if (!wallpaperAvatar || !cell) {
+      return {
+        width,
+        height,
+        cell,
+        offsetX: 0,
+        offsetY: 0,
+        columns: Math.max(1, Math.ceil(width / Math.max(cell, 1))),
+        rows: Math.max(1, Math.ceil(height / Math.max(cell, 1))),
+      };
+    }
+
+    const avatarRect = wallpaperAvatar.getBoundingClientRect();
+    let offsetX = avatarRect.left - Math.round(avatarRect.left / cell) * cell;
+    let offsetY = avatarRect.top - Math.round(avatarRect.top / cell) * cell;
+
+    while (offsetX > 0) {
+      offsetX -= cell;
+    }
+
+    while (offsetY > 0) {
+      offsetY -= cell;
+    }
+
+    return {
+      width,
+      height,
+      cell,
+      offsetX,
+      offsetY,
+      columns: Math.max(1, Math.ceil((width - offsetX) / cell)),
+      rows: Math.max(1, Math.ceil((height - offsetY) / cell)),
+    };
   }
 
   function createSnake(name, body, direction) {
@@ -104,6 +156,148 @@
     return a.x === b.x && a.y === b.y;
   }
 
+  function getCellKey(cell) {
+    return `${cell.x}:${cell.y}`;
+  }
+
+  function cloneGameSnapshot() {
+    return {
+      snakes: Object.fromEntries(
+        Object.entries(state.snakes).map(([name, snake]) => [
+          name,
+          {
+            ...snake,
+            body: snake.body.map((segment) => ({ ...segment })),
+            direction: { ...snake.direction },
+            nextDirection: { ...snake.nextDirection },
+          },
+        ]),
+      ),
+      food: state.food ? { ...state.food } : null,
+      trail: state.trail.map((segment) => ({ ...segment })),
+    };
+  }
+
+  function projectCell(cell, previousColumns, previousRows) {
+    const mapAxis = (value, previousSize, nextSize) => {
+      if (nextSize <= 1 || previousSize <= 1) {
+        return 0;
+      }
+
+      return clamp(Math.floor(((value + 0.5) / previousSize) * nextSize), 0, nextSize - 1);
+    };
+
+    return {
+      x: mapAxis(cell.x, previousColumns, state.columns),
+      y: mapAxis(cell.y, previousRows, state.rows),
+    };
+  }
+
+  function findNearestAvailableCell(preferred, occupied) {
+    const maxDistance = state.columns + state.rows;
+
+    for (let distance = 0; distance <= maxDistance; distance += 1) {
+      for (let deltaY = -distance; deltaY <= distance; deltaY += 1) {
+        const deltaX = distance - Math.abs(deltaY);
+        const candidates = deltaX === 0
+          ? [[preferred.x, preferred.y + deltaY]]
+          : [
+              [preferred.x - deltaX, preferred.y + deltaY],
+              [preferred.x + deltaX, preferred.y + deltaY],
+            ];
+
+        for (const [x, y] of candidates) {
+          const candidate = {
+            x: (x + state.columns) % state.columns,
+            y: (y + state.rows) % state.rows,
+          };
+
+          if (!occupied.has(getCellKey(candidate))) {
+            return candidate;
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function projectSnakeBody(body, previousColumns, previousRows, occupied) {
+    const nextBody = [];
+    const claimed = new Set();
+
+    for (const segment of body) {
+      const projected = projectCell(segment, previousColumns, previousRows);
+      const nextSegment = findNearestAvailableCell(projected, new Set([...occupied, ...claimed]));
+
+      if (!nextSegment) {
+        return null;
+      }
+
+      nextBody.push(nextSegment);
+      claimed.add(getCellKey(nextSegment));
+    }
+
+    return nextBody;
+  }
+
+  function reconcileStateAfterResize(snapshot, previousColumns, previousRows) {
+    const occupied = new Set();
+
+    state.snakes = {};
+
+    ["player", "cpu"].forEach((name) => {
+      const previousSnake = snapshot.snakes[name];
+
+      if (!previousSnake) {
+        resetSnake(name, false);
+        state.snakes[name].crashUntil = 0;
+        state.snakes[name].body.forEach((segment) => occupied.add(getCellKey(segment)));
+        return;
+      }
+
+      const projectedBody = projectSnakeBody(previousSnake.body, previousColumns, previousRows, occupied);
+
+      if (!projectedBody || projectedBody.length < 2) {
+        const fallbackSnake = buildSpawn(name);
+        fallbackSnake.score = previousSnake.score ?? 1;
+        fallbackSnake.crashUntil = 0;
+        state.snakes[name] = fallbackSnake;
+        fallbackSnake.body.forEach((segment) => occupied.add(getCellKey(segment)));
+        return;
+      }
+
+      state.snakes[name] = {
+        ...previousSnake,
+        body: projectedBody,
+        direction: { ...previousSnake.direction },
+        nextDirection: { ...previousSnake.nextDirection },
+      };
+
+      projectedBody.forEach((segment) => occupied.add(getCellKey(segment)));
+    });
+
+    state.food = snapshot.food ? projectCell(snapshot.food, previousColumns, previousRows) : null;
+
+    if (!state.food || occupied.has(getCellKey(state.food))) {
+      placeFood();
+    }
+
+    state.trail = snapshot.trail
+      .map((segment) => ({
+        ...segment,
+        ...projectCell(segment, previousColumns, previousRows),
+      }))
+      .filter((segment, index, segments) => index === segments.findIndex((other) => (
+        other.owner === segment.owner &&
+        other.bornAt === segment.bornAt &&
+        isSameCell(other, segment)
+      )));
+
+    updateSpeed();
+    updateScore();
+  }
+
   function updateScore() {
     const cpuScore = String(state.snakes.cpu?.score ?? 0).padStart(3, "0");
     const playerScore = String(state.snakes.player?.score ?? 0).padStart(3, "0");
@@ -115,12 +309,11 @@
   }
 
   function syncSize() {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+    const previousColumns = state.columns;
+    const previousRows = state.rows;
+    const previousSnapshot = previousColumns > 0 && previousRows > 0 ? cloneGameSnapshot() : null;
+    const { width, height, cell, columns, rows, offsetX, offsetY } = getWallpaperMetrics();
     const ratio = window.devicePixelRatio || 1;
-    const cell = getWallpaperPixelSize();
-    const columns = Math.max(1, Math.floor(width / cell));
-    const rows = Math.max(1, Math.floor(height / cell));
 
     canvas.width = Math.floor(width * ratio);
     canvas.height = Math.floor(height * ratio);
@@ -129,14 +322,24 @@
 
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
 
-    const gridChanged = columns !== state.columns || rows !== state.rows || cell !== state.cell;
+    const gridChanged =
+      columns !== state.columns ||
+      rows !== state.rows ||
+      Math.abs(cell - state.cell) > 0.01;
 
     state.columns = columns;
     state.rows = rows;
     state.cell = cell;
+    state.offsetX = offsetX;
+    state.offsetY = offsetY;
+
+    if (!previousSnapshot) {
+      resetGame();
+      return;
+    }
 
     if (gridChanged) {
-      resetGame();
+      reconcileStateAfterResize(previousSnapshot, previousColumns, previousRows);
     }
   }
 
@@ -205,6 +408,20 @@
     }
 
     snake.nextDirection = { x, y };
+  }
+
+  function handleSwipe(deltaX, deltaY) {
+    if (Math.abs(deltaX) < swipeThreshold && Math.abs(deltaY) < swipeThreshold) {
+      return false;
+    }
+
+    if (Math.abs(deltaX) > Math.abs(deltaY)) {
+      setDirection(state.snakes.player, deltaX > 0 ? 1 : -1, 0);
+    } else {
+      setDirection(state.snakes.player, 0, deltaY > 0 ? 1 : -1);
+    }
+
+    return true;
   }
 
   function getNextHead(snake, direction) {
@@ -338,26 +555,21 @@
   }
 
   function draw(timestamp) {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+    const { width, height } = getWallpaperMetrics();
 
     context.clearRect(0, 0, width, height);
 
-    const gridWidth = state.columns * state.cell;
-    const gridHeight = state.rows * state.cell;
-    const offsetX = Math.floor((width - gridWidth) / 2);
-    const offsetY = Math.floor((height - gridHeight) / 2);
-    const pixelWidth = Math.max(4, Math.floor(state.cell * 0.78));
-    const pixelHeight = Math.max(4, Math.floor(state.cell * 0.82));
-    const pixelOffsetX = Math.floor((state.cell - pixelWidth) / 2);
-    const pixelOffsetY = Math.floor((state.cell - pixelHeight) / 2);
+    const pixelWidth = Math.max(4, state.cell * 0.78);
+    const pixelHeight = Math.max(4, state.cell * 0.82);
+    const pixelOffsetX = (state.cell - pixelWidth) / 2;
+    const pixelOffsetY = (state.cell - pixelHeight) / 2;
 
     function drawPixel(column, row, color, alpha = 1) {
       context.fillStyle = color;
       context.globalAlpha = alpha;
       context.fillRect(
-        offsetX + column * state.cell + pixelOffsetX,
-        offsetY + row * state.cell + pixelOffsetY,
+        state.offsetX + column * state.cell + pixelOffsetX,
+        state.offsetY + row * state.cell + pixelOffsetY,
         pixelWidth,
         pixelHeight,
       );
@@ -437,7 +649,63 @@
     setDirection(state.snakes.player, next[0], next[1]);
   }, { passive: false });
 
+  window.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 1 || event.target.closest("a")) {
+      touchState.tracking = false;
+      return;
+    }
+
+    const touch = event.touches[0];
+    touchState.startX = touch.clientX;
+    touchState.startY = touch.clientY;
+    touchState.lastX = touch.clientX;
+    touchState.lastY = touch.clientY;
+    touchState.tracking = true;
+    touchState.handled = false;
+  }, { passive: true });
+
+  window.addEventListener("touchmove", (event) => {
+    if (!touchState.tracking || touchState.handled || event.touches.length !== 1) {
+      return;
+    }
+
+    const touch = event.touches[0];
+    touchState.lastX = touch.clientX;
+    touchState.lastY = touch.clientY;
+
+    if (!handleSwipe(touch.clientX - touchState.startX, touch.clientY - touchState.startY)) {
+      return;
+    }
+
+    touchState.handled = true;
+    event.preventDefault();
+  }, { passive: false });
+
+  window.addEventListener("touchend", () => {
+    if (!touchState.tracking) {
+      return;
+    }
+
+    if (!touchState.handled) {
+      handleSwipe(touchState.lastX - touchState.startX, touchState.lastY - touchState.startY);
+    }
+
+    touchState.tracking = false;
+    touchState.handled = false;
+  });
+
+  window.addEventListener("touchcancel", () => {
+    touchState.tracking = false;
+    touchState.handled = false;
+  });
+
   window.addEventListener("resize", syncSize);
+  window.visualViewport?.addEventListener("resize", syncSize);
+  new ResizeObserver(syncSize).observe(wallpaper);
+
+  if (wallpaperAvatar) {
+    new ResizeObserver(syncSize).observe(wallpaperAvatar);
+  }
 
   syncSize();
   window.requestAnimationFrame(loop);
