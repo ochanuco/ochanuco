@@ -301,7 +301,7 @@
   function updateScore() {
     const cpuScore = String(state.snakes.cpu?.score ?? 0).padStart(3, "0");
     const playerScore = String(state.snakes.player?.score ?? 0).padStart(3, "0");
-    state.maxScore = state.snakes.player?.score ?? 0;
+    state.maxScore = Math.max(state.maxScore, state.snakes.player?.score ?? 0);
     cpuScoreNode.textContent = cpuScore;
     playerScoreNode.textContent = playerScore;
     roundNode.textContent = String(state.round).padStart(3, "0");
@@ -400,6 +400,7 @@
     state.lastStepAt = 0;
     state.trail = [];
     state.round = 1;
+    state.maxScore = 1;
     resetRound();
     state.snakes.player.crashUntil = 0;
     state.snakes.cpu.crashUntil = 0;
