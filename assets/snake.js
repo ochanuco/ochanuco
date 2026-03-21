@@ -85,7 +85,8 @@
 
   function updateModeUi() {
     wallpaper.classList.toggle("snake-wallpaper--idle", !state.modeActive);
-    hintNode.textContent = state.modeActive ? "Q quit" : "Game: press G";
+    hintNode.textContent = state.modeActive ? "Quit" : "Game";
+    hintNode.setAttribute("aria-label", state.modeActive ? "Quit game mode" : "Start game mode");
   }
 
   function clamp(value, min, max) {
@@ -876,6 +877,17 @@
     draw(timestamp);
     window.requestAnimationFrame(loop);
   }
+
+  hintNode.addEventListener("click", (event) => {
+    event.preventDefault();
+
+    if (state.modeActive) {
+      leaveGameMode();
+      return;
+    }
+
+    enterGameMode();
+  });
 
   window.addEventListener("keydown", (event) => {
     if (event.key === "g" || event.key === "G") {
