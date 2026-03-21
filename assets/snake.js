@@ -301,7 +301,7 @@
   function updateScore() {
     const cpuScore = String(state.snakes.cpu?.score ?? 0).padStart(3, "0");
     const playerScore = String(state.snakes.player?.score ?? 0).padStart(3, "0");
-    state.maxScore = Math.max(state.maxScore, state.snakes.cpu?.score ?? 0, state.snakes.player?.score ?? 0);
+    state.maxScore = state.snakes.player?.score ?? 0;
     cpuScoreNode.textContent = cpuScore;
     playerScoreNode.textContent = playerScore;
     roundNode.textContent = String(state.round).padStart(3, "0");
@@ -387,19 +387,22 @@
     state.trail = state.trail.filter((segment) => segment.owner !== name);
   }
 
-  function resetGame() {
-    state.snakes = {};
+  function resetRound() {
     resetSnake("player", false);
     resetSnake("cpu", false);
-    state.snakes.player.crashUntil = 0;
-    state.snakes.cpu.crashUntil = 0;
-    state.lastStepAt = 0;
-    state.trail = [];
-    state.round = 1;
-    state.maxScore = 1;
     placeFood();
     updateSpeed();
     updateScore();
+  }
+
+  function resetGame() {
+    state.snakes = {};
+    state.lastStepAt = 0;
+    state.trail = [];
+    state.round = 1;
+    resetRound();
+    state.snakes.player.crashUntil = 0;
+    state.snakes.cpu.crashUntil = 0;
   }
 
   function setDirection(snake, x, y) {
@@ -520,8 +523,7 @@
 
     if (occupied.some((segment) => isSameCell(segment, nextHead))) {
       state.round += 1;
-      resetSnake(name, true);
-      updateScore();
+      resetRound();
       return;
     }
 
