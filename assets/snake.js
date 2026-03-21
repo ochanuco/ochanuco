@@ -48,6 +48,15 @@
     slowestInterval: 180,
     fastestInterval: 72,
   };
+  const swipeThreshold = 24;
+  const touchState = {
+    startX: 0,
+    startY: 0,
+    lastX: 0,
+    lastY: 0,
+    tracking: false,
+    handled: false,
+  };
 
   function getTotalSnakeLength() {
     return Object.values(state.snakes).reduce((sum, snake) => sum + snake.body.length, 0);
@@ -401,6 +410,20 @@
     snake.nextDirection = { x, y };
   }
 
+  function handleSwipe(deltaX, deltaY) {
+    if (Math.abs(deltaX) < swipeThreshold && Math.abs(deltaY) < swipeThreshold) {
+      return false;
+    }
+
+    if (Math.abs(deltaX) > Math.abs(deltaY)) {
+      setDirection(state.snakes.player, deltaX > 0 ? 1 : -1, 0);
+    } else {
+      setDirection(state.snakes.player, 0, deltaY > 0 ? 1 : -1);
+    }
+
+    return true;
+  }
+
   function getNextHead(snake, direction) {
     const head = snake.body[snake.body.length - 1];
 
@@ -625,6 +648,56 @@
     event.preventDefault();
     setDirection(state.snakes.player, next[0], next[1]);
   }, { passive: false });
+
+  window.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 1 || event.target.closest("a")) {
+      touchState.tracking = false;
+      return;
+    }
+
+    const touch = event.touches[0];
+    touchState.startX = touch.clientX;
+    touchState.startY = touch.clientY;
+    touchState.lastX = touch.clientX;
+    touchState.lastY = touch.clientY;
+    touchState.tracking = true;
+    touchState.handled = false;
+  }, { passive: true });
+
+  window.addEventListener("touchmove", (event) => {
+    if (!touchState.tracking || touchState.handled || event.touches.length !== 1) {
+      return;
+    }
+
+    const touch = event.touches[0];
+    touchState.lastX = touch.clientX;
+    touchState.lastY = touch.clientY;
+
+    if (!handleSwipe(touch.clientX - touchState.startX, touch.clientY - touchState.startY)) {
+      return;
+    }
+
+    touchState.handled = true;
+    event.preventDefault();
+  }, { passive: false });
+
+  window.addEventListener("touchend", () => {
+    if (!touchState.tracking) {
+      return;
+    }
+
+    if (!touchState.handled) {
+      handleSwipe(touchState.lastX - touchState.startX, touchState.lastY - touchState.startY);
+    }
+
+    touchState.tracking = false;
+    touchState.handled = false;
+  });
+
+  window.addEventListener("touchcancel", () => {
+    touchState.tracking = false;
+    touchState.handled = false;
+  });
 
   window.addEventListener("resize", syncSize);
   window.visualViewport?.addEventListener("resize", syncSize);
