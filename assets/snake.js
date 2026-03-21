@@ -1,15 +1,17 @@
 (() => {
   const wallpaper = document.querySelector(".snake-wallpaper");
   const canvas = wallpaper?.querySelector(".snake-wallpaper__canvas");
-  const cpuScoreNode = wallpaper?.querySelector(".snake-wallpaper__score--cpu");
   const playerScoreNode = wallpaper?.querySelector(".snake-wallpaper__score--player");
-  const roundNode = wallpaper?.querySelector(".snake-wallpaper__round");
+  const enemyCountNode = wallpaper?.querySelector(".snake-wallpaper__enemy-count");
+  const enemyTargetNode = wallpaper?.querySelector(".snake-wallpaper__enemy-target");
+  const foodStockNode = wallpaper?.querySelector(".snake-wallpaper__food-stock");
   const maxScoreNode = wallpaper?.querySelector(".snake-wallpaper__max-score");
   const speedCurrentNode = wallpaper?.querySelector(".snake-wallpaper__speed-current");
   const speedMaxNode = wallpaper?.querySelector(".snake-wallpaper__speed-max");
+  const hintNode = wallpaper?.querySelector(".snake-wallpaper__hint");
   const wallpaperAvatar = document.querySelector(".avatar-wallpaper__item");
 
-  if (!wallpaper || !canvas || !cpuScoreNode || !playerScoreNode || !roundNode || !maxScoreNode || !speedCurrentNode || !speedMaxNode) {
+  if (!wallpaper || !canvas || !playerScoreNode || !enemyCountNode || !enemyTargetNode || !foodStockNode || !maxScoreNode || !speedCurrentNode || !speedMaxNode || !hintNode) {
     return;
   }
 
@@ -36,18 +38,26 @@
     offsetX: 0,
     offsetY: 0,
     snakes: {},
-    food: null,
+    foods: [],
     speed: 150,
     lastStepAt: 0,
     trail: [],
-    round: 1,
     maxScore: 1,
+    foodStock: 100,
+    modeActive: false,
+    gameOver: false,
   };
 
   const speedBounds = {
     slowestInterval: 180,
     fastestInterval: 72,
   };
+  const foodCount = 3;
+  const initialFoodStock = 100;
+  const initialEnemyCount = 1;
+  const maxEnemyCount = 5;
+  const enemyGrowthInterval = 20;
+  const enemyRespawnDelay = 2800;
   const swipeThreshold = 24;
   const touchState = {
     startX: 0,
@@ -59,7 +69,7 @@
   };
 
   function getTotalSnakeLength() {
-    return Object.values(state.snakes).reduce((sum, snake) => sum + snake.body.length, 0);
+    return Object.values(state.snakes).reduce((sum, snake) => sum + (snake?.active === false ? 0 : snake.body.length), 0);
   }
 
   function getSpeedValue(interval) {
@@ -71,6 +81,12 @@
     state.speed = Math.max(speedBounds.fastestInterval, speedBounds.slowestInterval - totalLength * 2);
     speedCurrentNode.textContent = String(getSpeedValue(state.speed)).padStart(2, "0");
     speedMaxNode.textContent = String(getSpeedValue(speedBounds.fastestInterval)).padStart(2, "0");
+  }
+
+  function updateModeUi() {
+    wallpaper.classList.toggle("snake-wallpaper--idle", !state.modeActive);
+    hintNode.textContent = state.modeActive ? "Quit" : "Game";
+    hintNode.setAttribute("aria-label", state.modeActive ? "Quit game mode" : "Start game mode");
   }
 
   function clamp(value, min, max) {
@@ -142,7 +158,26 @@
       nextDirection: { ...direction },
       score: 1,
       crashUntil: 0,
+      active: true,
+      respawnAt: 0,
     };
+  }
+
+  function getEnemyNames() {
+    return Array.from({ length: maxEnemyCount }, (_, index) => `enemy-${index + 1}`);
+  }
+
+  function isEnemyName(name) {
+    return name.startsWith("enemy-");
+  }
+
+  function getActiveSnakeEntries() {
+    return Object.entries(state.snakes).filter(([, snake]) => snake?.active !== false);
+  }
+
+  function getEnemySpawnTarget() {
+    const consumedFoods = initialFoodStock - state.foodStock;
+    return Math.min(maxEnemyCount, initialEnemyCount + Math.floor(consumedFoods / enemyGrowthInterval));
   }
 
   function randomCell() {
@@ -173,7 +208,7 @@
           },
         ]),
       ),
-      food: state.food ? { ...state.food } : null,
+      foods: state.foods.map((food) => ({ ...food })),
       trail: state.trail.map((segment) => ({ ...segment })),
     };
   }
@@ -246,13 +281,24 @@
 
     state.snakes = {};
 
-    ["player", "cpu"].forEach((name) => {
+    ["player", ...getEnemyNames()].forEach((name) => {
       const previousSnake = snapshot.snakes[name];
 
       if (!previousSnake) {
-        resetSnake(name, false);
-        state.snakes[name].crashUntil = 0;
-        state.snakes[name].body.forEach((segment) => occupied.add(getCellKey(segment)));
+        if (name === "player" || getEnemyNames().indexOf(name) < initialEnemyCount) {
+          resetSnake(name, false);
+          state.snakes[name].crashUntil = 0;
+          state.snakes[name].body.forEach((segment) => occupied.add(getCellKey(segment)));
+        }
+        return;
+      }
+
+      if (previousSnake.active === false) {
+        state.snakes[name] = {
+          ...previousSnake,
+          body: [],
+          active: false,
+        };
         return;
       }
 
@@ -277,11 +323,14 @@
       projectedBody.forEach((segment) => occupied.add(getCellKey(segment)));
     });
 
-    state.food = snapshot.food ? projectCell(snapshot.food, previousColumns, previousRows) : null;
+    state.foods = (snapshot.foods ?? [])
+      .map((food) => projectCell(food, previousColumns, previousRows))
+      .filter((food, index, foods) => (
+        !occupied.has(getCellKey(food)) &&
+        index === foods.findIndex((other) => isSameCell(other, food))
+      ));
 
-    if (!state.food || occupied.has(getCellKey(state.food))) {
-      placeFood();
-    }
+    placeFood();
 
     state.trail = snapshot.trail
       .map((segment) => ({
@@ -299,12 +348,14 @@
   }
 
   function updateScore() {
-    const cpuScore = String(state.snakes.cpu?.score ?? 0).padStart(3, "0");
     const playerScore = String(state.snakes.player?.score ?? 0).padStart(3, "0");
+    const activeEnemies = getEnemyNames().filter((name) => state.snakes[name]?.active !== false).length;
+    const enemyTarget = state.modeActive ? getEnemySpawnTarget() : initialEnemyCount;
     state.maxScore = Math.max(state.maxScore, state.snakes.player?.score ?? 0);
-    cpuScoreNode.textContent = cpuScore;
     playerScoreNode.textContent = playerScore;
-    roundNode.textContent = String(state.round).padStart(3, "0");
+    enemyCountNode.textContent = String(activeEnemies);
+    enemyTargetNode.textContent = String(enemyTarget);
+    foodStockNode.textContent = String(state.foodStock).padStart(3, "0");
     maxScoreNode.textContent = String(state.maxScore).padStart(3, "0");
   }
 
@@ -333,6 +384,22 @@
     state.offsetX = offsetX;
     state.offsetY = offsetY;
 
+    if (!previousSnapshot || !state.modeActive) {
+      if (!state.modeActive) {
+        state.snakes = {};
+        state.foods = [];
+        state.trail = [];
+        updateSpeed();
+        updateScore();
+      }
+
+      if (!previousSnapshot) {
+        return;
+      }
+
+      return;
+    }
+
     if (!previousSnapshot) {
       resetGame();
       return;
@@ -344,13 +411,34 @@
   }
 
   function placeFood() {
-    let candidate = randomCell();
-
-    while (Object.values(state.snakes).some((snake) => snake.body.some((segment) => isSameCell(segment, candidate)))) {
-      candidate = randomCell();
+    if (state.gameOver) {
+      state.foods = [];
+      return;
     }
 
-    state.food = candidate;
+    state.foods = state.foods.slice(0, Math.min(foodCount, state.foodStock));
+
+    const occupied = new Set();
+
+    Object.values(state.snakes).forEach((snake) => {
+      if (!snake || snake.active === false) {
+        return;
+      }
+
+      snake.body.forEach((segment) => occupied.add(getCellKey(segment)));
+    });
+    state.foods.forEach((food) => occupied.add(getCellKey(food)));
+
+    while (state.foods.length < Math.min(foodCount, state.foodStock)) {
+      const candidate = findNearestAvailableCell(randomCell(), occupied);
+
+      if (!candidate) {
+        break;
+      }
+
+      state.foods.push(candidate);
+      occupied.add(getCellKey(candidate));
+    }
   }
 
   function buildSpawn(name) {
@@ -369,27 +457,100 @@
       );
     }
 
+    const enemyIndex = Math.max(0, getEnemyNames().indexOf(name));
+    const lane = enemyIndex % maxEnemyCount;
+    const rowOffset = -6 + lane * 3;
+    const columnOffset = 7 + Math.floor(enemyIndex / 2);
+
     return createSnake(
-      "cpu",
+      name,
       [
-        { x: wrapCell(centerX + 7, state.columns), y: wrapCell(centerY - 4, state.rows) },
-        { x: wrapCell(centerX + 8, state.columns), y: wrapCell(centerY - 4, state.rows) },
+        { x: wrapCell(centerX + columnOffset, state.columns), y: wrapCell(centerY + rowOffset, state.rows) },
+        { x: wrapCell(centerX + columnOffset + 1, state.columns), y: wrapCell(centerY + rowOffset, state.rows) },
       ],
       { x: -1, y: 0 },
     );
   }
 
+  function fitBodyToAvailableCells(body, occupied) {
+    const nextBody = [];
+    const claimed = new Set();
+
+    for (const segment of body) {
+      const nextSegment = findNearestAvailableCell(segment, new Set([...occupied, ...claimed]));
+
+      if (!nextSegment) {
+        return null;
+      }
+
+      nextBody.push(nextSegment);
+      claimed.add(getCellKey(nextSegment));
+    }
+
+    return nextBody;
+  }
+
   function resetSnake(name, keepScore = true) {
     const score = keepScore ? state.snakes[name]?.score ?? 1 : 1;
-    state.snakes[name] = buildSpawn(name);
+    const spawn = buildSpawn(name);
+    const occupied = new Set();
+
+    Object.entries(state.snakes).forEach(([otherName, snake]) => {
+      if (otherName === name || snake.active === false) {
+        return;
+      }
+
+      snake.body.forEach((segment) => occupied.add(getCellKey(segment)));
+    });
+
+    const body = fitBodyToAvailableCells(spawn.body, occupied);
+
+    state.snakes[name] = {
+      ...spawn,
+      body: body ?? spawn.body,
+      active: true,
+      respawnAt: 0,
+    };
     state.snakes[name].score = score;
     state.snakes[name].crashUntil = performance.now() + 700;
     state.trail = state.trail.filter((segment) => segment.owner !== name);
   }
 
-  function resetRound() {
+  function deactivateEnemy(name, timestamp) {
+    const snake = state.snakes[name];
+
+    if (!snake) {
+      return;
+    }
+
+    state.snakes[name] = {
+      ...snake,
+      body: [],
+      active: false,
+      crashUntil: timestamp + 700,
+      respawnAt: timestamp + enemyRespawnDelay,
+    };
+    state.trail = state.trail.filter((segment) => segment.owner !== name);
+  }
+
+  function resetBoard() {
     resetSnake("player", false);
-    resetSnake("cpu", false);
+    getEnemyNames().forEach((name, index) => {
+      if (index < initialEnemyCount) {
+        resetSnake(name, false);
+        state.snakes[name].crashUntil = 0;
+        return;
+      }
+
+      state.snakes[name] = {
+        ...createSnake(name, [], { x: -1, y: 0 }),
+        body: [],
+        score: 0,
+        active: false,
+        crashUntil: 0,
+        respawnAt: 0,
+      };
+    });
     placeFood();
     updateSpeed();
     updateScore();
@@ -399,11 +560,30 @@
     state.snakes = {};
     state.lastStepAt = 0;
     state.trail = [];
-    state.round = 1;
     state.maxScore = 1;
-    resetRound();
+    state.foodStock = initialFoodStock;
+    state.gameOver = false;
+    resetBoard();
     state.snakes.player.crashUntil = 0;
-    state.snakes.cpu.crashUntil = 0;
+  }
+
+  function enterGameMode() {
+    state.modeActive = true;
+    updateModeUi();
+    resetGame();
+  }
+
+  function leaveGameMode() {
+    state.modeActive = false;
+    state.snakes = {};
+    state.foods = [];
+    state.trail = [];
+    state.lastStepAt = 0;
+    state.foodStock = initialFoodStock;
+    state.gameOver = false;
+    updateModeUi();
+    updateSpeed();
+    updateScore();
   }
 
   function setDirection(snake, x, y) {
@@ -449,7 +629,7 @@
   function getOccupiedSegments(excludedName, allowOwnTailMove) {
     const occupied = [];
 
-    Object.entries(state.snakes).forEach(([name, snake]) => {
+    getActiveSnakeEntries().forEach(([name, snake]) => {
       const segments = allowOwnTailMove && name === excludedName ? snake.body.slice(1) : snake.body;
 
       segments.forEach((segment) => {
@@ -468,35 +648,37 @@
     }
 
     const nextHead = getNextHead(snake, direction);
-    const isEating = Boolean(state.food && isSameCell(nextHead, state.food));
+    const isEating = state.foods.some((food) => isSameCell(nextHead, food));
     const occupied = getOccupiedSegments(name, !isEating);
 
     return !occupied.some((segment) => isSameCell(segment, nextHead));
   }
 
-  function chooseCpuDirection() {
-    const cpu = state.snakes.cpu;
+  function chooseEnemyDirection(name) {
+    const enemy = state.snakes[name];
     const directions = [
       { x: 1, y: 0 },
       { x: -1, y: 0 },
       { x: 0, y: 1 },
       { x: 0, y: -1 },
     ];
-    const safeDirections = directions.filter((direction) => isSafeDirection("cpu", direction));
+    const safeDirections = directions.filter((direction) => isSafeDirection(name, direction));
 
     if (safeDirections.length === 0) {
-      return cpu.nextDirection;
+      return enemy.nextDirection;
     }
 
     const rankedDirections = safeDirections
       .map((direction) => ({
         direction,
-        distance: state.food ? torusDistance(getNextHead(cpu, direction), state.food) : 0,
-        turnPenalty: direction.x === cpu.direction.x && direction.y === cpu.direction.y ? 0 : 0.3,
+        distance: state.foods.length
+          ? Math.min(...state.foods.map((food) => torusDistance(getNextHead(enemy, direction), food)))
+          : 0,
+        turnPenalty: direction.x === enemy.direction.x && direction.y === enemy.direction.y ? 0 : 0.3,
       }))
       .sort((left, right) => (left.distance + left.turnPenalty) - (right.distance + right.turnPenalty));
 
-    const keepGoing = safeDirections.find((direction) => direction.x === cpu.direction.x && direction.y === cpu.direction.y);
+    const keepGoing = safeDirections.find((direction) => direction.x === enemy.direction.x && direction.y === enemy.direction.y);
 
     if (keepGoing && Math.random() < 0.18) {
       return keepGoing;
@@ -512,36 +694,83 @@
   function stepSnake(name, timestamp) {
     const snake = state.snakes[name];
 
-    if (name === "cpu") {
-      snake.nextDirection = chooseCpuDirection();
+    if (!snake || snake.active === false) {
+      return false;
+    }
+
+    if (isEnemyName(name)) {
+      snake.nextDirection = chooseEnemyDirection(name);
     }
 
     snake.direction = snake.nextDirection;
 
     const nextHead = getNextHead(snake, snake.direction);
-    const isEating = Boolean(state.food && isSameCell(nextHead, state.food));
+    const eatenFoodIndex = state.foods.findIndex((food) => isSameCell(nextHead, food));
+    const isEating = eatenFoodIndex >= 0;
     const occupied = getOccupiedSegments(name, !isEating);
 
     if (occupied.some((segment) => isSameCell(segment, nextHead))) {
-      state.round += 1;
-      resetRound();
-      return;
+      if (name === "player") {
+        resetSnake(name, false);
+      } else {
+        deactivateEnemy(name, timestamp);
+      }
+
+      state.foods = state.foods.filter((food) => !state.snakes[name].body.some((segment) => isSameCell(segment, food)));
+      placeFood();
+
+      updateSpeed();
+      updateScore();
+      return true;
     }
 
     snake.body.push(nextHead);
     state.trail.push({ ...nextHead, owner: name, bornAt: timestamp });
 
     if (isEating) {
+      state.foods.splice(eatenFoodIndex, 1);
       snake.score += 1;
-      placeFood();
+      state.foodStock = Math.max(0, state.foodStock - 1);
+
+      if (state.foodStock === 0) {
+        state.gameOver = true;
+        state.foods = [];
+      } else {
+        placeFood();
+      }
+
       updateSpeed();
       updateScore();
     } else {
       snake.body.shift();
     }
+
+    return false;
+  }
+
+  function respawnEnemies(timestamp) {
+    if (state.gameOver) {
+      return;
+    }
+
+    const targetCount = getEnemySpawnTarget();
+
+    getEnemyNames().forEach((name, index) => {
+      const snake = state.snakes[name];
+
+      if (!snake || snake.active !== false || index >= targetCount || timestamp < snake.respawnAt) {
+        return;
+      }
+
+      resetSnake(name, false);
+    });
   }
 
   function step(timestamp) {
+    if (!state.modeActive || state.gameOver) {
+      return;
+    }
+
     if (!state.lastStepAt) {
       state.lastStepAt = timestamp;
     }
@@ -551,8 +780,16 @@
     }
 
     state.lastStepAt = timestamp;
-    stepSnake("player", timestamp);
-    stepSnake("cpu", timestamp);
+    respawnEnemies(timestamp);
+    if (stepSnake("player", timestamp)) {
+      updateSpeed();
+      state.trail = state.trail.filter((segment) => timestamp - segment.bornAt < 800);
+      return;
+    }
+
+    getEnemyNames().forEach((name) => {
+      stepSnake(name, timestamp);
+    });
     updateSpeed();
     state.trail = state.trail.filter((segment) => timestamp - segment.bornAt < 800);
   }
@@ -561,6 +798,10 @@
     const { width, height } = getWallpaperMetrics();
 
     context.clearRect(0, 0, width, height);
+
+    if (!state.modeActive && !state.gameOver) {
+      return;
+    }
 
     const pixelWidth = Math.max(4, state.cell * 0.78);
     const pixelHeight = Math.max(4, state.cell * 0.82);
@@ -587,17 +828,21 @@
 
     state.trail.forEach((segment) => {
       const age = Math.min(1, (timestamp - segment.bornAt) / 800);
-      drawPixel(segment.x, segment.y, segment.owner === "cpu" ? palette.cpu : palette.player, 0.06 * (1 - age));
+      drawPixel(segment.x, segment.y, isEnemyName(segment.owner) ? palette.cpu : palette.player, 0.06 * (1 - age));
     });
 
-    if (state.food) {
-      drawPixel(state.food.x, state.food.y, palette.food, 0.34);
-    }
+    state.foods.forEach((food) => {
+      drawPixel(food.x, food.y, palette.food, 0.34);
+    });
 
     Object.values(state.snakes).forEach((snake) => {
+      if (!snake || snake.active === false) {
+        return;
+      }
+
       snake.body.forEach((segment, index) => {
         const isHead = index === snake.body.length - 1;
-        const isCpu = snake.name === "cpu";
+        const isCpu = isEnemyName(snake.name);
         const color = snake.crashUntil > timestamp
           ? palette.crash
           : isHead
@@ -612,6 +857,19 @@
         );
       });
     });
+
+    if (state.gameOver) {
+      context.fillStyle = "rgba(8, 10, 24, 0.72)";
+      context.fillRect(0, 0, width, height);
+      context.fillStyle = "#f3f4fb";
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.font = "600 28px ui-monospace, SFMono-Regular, Menlo, monospace";
+      context.fillText("GAME OVER", width / 2, height / 2 - 10);
+      context.font = "500 14px ui-monospace, SFMono-Regular, Menlo, monospace";
+      context.fillStyle = "rgba(243, 244, 251, 0.78)";
+      context.fillText("Press Q to quit", width / 2, height / 2 + 18);
+    }
   }
 
   function loop(timestamp) {
@@ -620,10 +878,27 @@
     window.requestAnimationFrame(loop);
   }
 
+  hintNode.addEventListener("click", (event) => {
+    event.preventDefault();
+
+    if (state.modeActive) {
+      leaveGameMode();
+      return;
+    }
+
+    enterGameMode();
+  });
+
   window.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
+    if (event.key === "g" || event.key === "G") {
       event.preventDefault();
-      resetGame();
+      enterGameMode();
+      return;
+    }
+
+    if (event.key === "q" || event.key === "Q") {
+      event.preventDefault();
+      leaveGameMode();
       return;
     }
 
@@ -648,6 +923,10 @@
       return;
     }
 
+    if (!state.modeActive) {
+      return;
+    }
+
     event.preventDefault();
     setDirection(state.snakes.player, next[0], next[1]);
   }, { passive: false });
@@ -668,7 +947,7 @@
   }, { passive: true });
 
   window.addEventListener("touchmove", (event) => {
-    if (!touchState.tracking || touchState.handled || event.touches.length !== 1) {
+    if (!state.modeActive || !touchState.tracking || touchState.handled || event.touches.length !== 1) {
       return;
     }
 
@@ -685,7 +964,7 @@
   }, { passive: false });
 
   window.addEventListener("touchend", () => {
-    if (!touchState.tracking) {
+    if (!state.modeActive || !touchState.tracking) {
       return;
     }
 
@@ -711,5 +990,6 @@
   }
 
   syncSize();
+  leaveGameMode();
   window.requestAnimationFrame(loop);
 })();
